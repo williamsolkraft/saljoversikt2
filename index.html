@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Solkraft Sverige — Säljöversikt</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Inter',system-ui,sans-serif;}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo, useRef } = React;
+
+const SALESPEOPLE = ["Aurell","Christer","George","Olle","Kalle","Martin","Pyro","Jens","Lasse","Anders","Urban","Kampelin"];
+const DEFAULT_GOAL = 1_000_000;
+const DEFAULT_SELLER_GOALS = { Urban: 0 };
+const MONTH_NAMES = ["Januari","Februari","Mars","April","Maj","Juni","Juli","Augusti","September","Oktober","November","December"];
+const MONTH_SHORT = ["Jan","Feb","Mar","Apr","Maj","Jun","Jul","Aug","Sep","Okt","Nov","Dec"];
+
+function loadGoals() {
+  try { const r=localStorage.getItem("solkraft-goals"); return r?JSON.parse(r):{default:DEFAULT_GOAL,sellers:DEFAULT_SELLER_GOALS}; }
+  catch { return {default:DEFAULT_GOAL,sellers:DEFAULT_SELLER_GOALS}; }
+}
+function saveGoals(g) { try{localStorage.setItem("solkraft-goals",JSON.stringify(g));}catch{} }
+function loadEntries() { try{const r=localStorage.getItem("solkraft-sales-v3");return r?JSON.parse(r):[];}catch{return[];} }
+function saveEntries(e) { try{localStorage.setItem("solkraft-sales-v3",JSON.stringify(e));}catch{} }
+function monthKey(d){const x=new Date(d);return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}`;}
+function fmt(n){return new Intl.NumberFormat("sv-SE",{style:"currency",currency:"SEK",maximumFractionDigits:0}).format(n);}
+function fmtDate(d){return new Date(d).toLocaleDateString("sv-SE");}
+function today(){return new Date().toISOString().split("T")[0];}
+
+function parseCSV(text){
+  const lines=text.trim().split(/\r?\n/).filter(Boolean);
+  if(lines.length<2)return{entries:[],errors:["Filen verkar tom."]};
+  const sep=lines[0].includes(";")?";":",";
+  const headers=lines[0].split(sep).map(h=>h.trim().toLowerCase().replace(/["""]/g,""));
+  const col={};
+  headers.forEach((h,i)=>{
+    if(/säljare|seller/.test(h))col.seller=i;
+    if(/kund|customer/.test(h))col.customer=i;
+    if(/belopp|amount|pris|värde/.test(h))col.amount=i;
+    if(/datum|date/.test(h))col.date=i;
+  });
+  const missing=["seller","amount","date"].filter(k=>col[k]===undefined);
+  if(missing.length)return{entries:[],errors:[`Saknar kolumner: ${missing.join(", ")}`]};
+  const entries=[],errors=[];
+  lines.slice(1).forEach((line,idx)=>{
+    const cols=line.split(sep).map(c=>c.trim().replace(/^[""]|[""]$/g,""));
+    const seller=cols[col.seller];
+    const customer=col.customer!==undefined?cols[col.customer]:"";
+    const rawAmt=cols[col.amount]?.replace(/\s/g,"").replace(",",".").replace(/[^0-9.]/g,"");
+    const amount=parseFloat(rawAmt);
+    const rawDate=cols[col.date];
+    const date=rawDate?.match(/^\d{4}-\d{2}-\d{2}$/)?rawDate:(()=>{const d=new Date(rawDate);return isNaN(d)?null:d.toISOString().split("T")[0];})();
+    if(!seller){errors.push(`Rad ${idx+2}: saknar säljare`);return;}
+    if(isNaN(amount)||amount<=0){errors.push(`Rad ${idx+2}: ogiltigt belopp`);return;}
+    if(!date){errors.push(`Rad ${idx+2}: ogiltigt datum`);return;}
+    entries.push({seller,customer,amount,date,id:Date.now()+idx});
+  });
+  return{entries,errors};
+}
+
+const C={bg:"#f5f7fa",surface:"#ffffff",border:"#e2e8ef",accent:"#f97316",accentLight:"#fff4ed",text:"#1a2236",sub:"#64748b",green:"#16a34a",greenLight:"#f0fdf4",blue:"#2563eb",blueLight:"#eff6ff",shadow:"0 1px 4px rgba(0,0,0,0.07),0 0 0 1px rgba(0,0,0,0.04)"};
+const s={
+  card:{background:C.surface,borderRadius:"12px",padding:"20px 24px",boxShadow:C.shadow,marginBottom:"20px"},
+  label:{fontSize:"11px",fontWeight:"600",color:C.sub,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"14px"},
+  input:{padding:"9px 12px",borderRadius:"8px",border:`1.5px solid ${C.border}`,fontSize:"13px",background:"#fff",color:C.text,outline:"none",width:"100%",boxSizing:"border-box",fontFamily:"inherit"},
+  select:{padding:"9px 12px",borderRadius:"8px",border:`1.5px solid ${C.border}`,fontSize:"13px",background:"#fff",color:C.text,outline:"none",width:"100%",cursor:"pointer",fontFamily:"inherit"},
+  btn:(bg,color,border)=>({padding:"8px 16px",borderRadius:"8px",border:`1.5px solid ${border||bg}`,background:bg,color,fontSize:"12px",fontWeight:"600",cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}),
+};
+
+function SellerGoalCard({seller,data,getGoal}){
+  const goal=getGoal(seller);
+  const pct=goal===0?100:Math.min(Math.round((data.total/goal)*100),100);
+  const done=goal===0||pct>=100;
+  return(
+    <div style={{background:done?C.greenLight:C.bg,borderRadius:"8px",padding:"10px 12px",border:`1px solid ${done?"#86efac":C.border}`}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:"5px"}}>
+        <div style={{fontSize:"12px",fontWeight:"600"}}>{seller}</div>
+        <div style={{fontSize:"11px",fontWeight:"700",color:done?C.green:pct>60?C.accent:C.sub}}>{goal===0?"—":done?"✓ "+pct+"%":pct+"%"}</div>
+      </div>
+      <div style={{height:"4px",borderRadius:"3px",background:C.border,overflow:"hidden"}}>
+        <div style={{height:"100%",width:`${pct}%`,background:done?C.green:C.accent,transition:"width 0.4s"}}/>
+      </div>
+      <div style={{fontSize:"10px",color:C.sub,marginTop:"4px"}}>{fmt(data.total)}{goal>0&&data.total<goal?` / ${fmt(goal-data.total)} kvar`:""}</div>
+    </div>
+  );
+}
+
+function App(){
+  const [entries,setEntries]=useState(()=>loadEntries());
+  const [goals,setGoals]=useState(()=>loadGoals());
+  const [editingGoals,setEditingGoals]=useState(false);
+  const [goalDraft,setGoalDraft]=useState(null);
+  const [form,setForm]=useState({seller:SALESPEOPLE[0],amount:"",customer:"",date:today()});
+  const [view,setView]=useState("overview");
+  const [toplistMonth,setToplistMonth]=useState("current");
+  const [statsMonth,setStatsMonth]=useState(null);
+  const [logSearch,setLogSearch]=useState("");
+  const [logSeller,setLogSeller]=useState("Alla");
+  const [logMonth,setLogMonth]=useState("Alla");
+  const [dragOver,setDragOver]=useState(false);
+  const [importResult,setImportResult]=useState(null);
+  const fileRef=useRef();
+
+  useEffect(()=>{saveEntries(entries);},[entries]);
+  useEffect(()=>{saveGoals(goals);},[goals]);
+
+  function getGoal(seller){return goals.sellers[seller]??goals.default;}
+
+  function openGoalEditor(){
+    setGoalDraft({default:goals.default,sellers:{...goals.sellers},teamOverride:goals.teamOverride});
+    setEditingGoals(true);
+  }
+  function saveGoalDraft(){
+    const cleaned={default:Number(goalDraft.default)||0,sellers:{},teamOverride:goalDraft.teamOverride?Number(goalDraft.teamOverride)||0:undefined};
+    SALESPEOPLE.forEach(sp=>{const v=goalDraft.sellers[sp];if(v!==undefined&&v!=="")cleaned.sellers[sp]=Number(v)||0;});
+    setGoals(cleaned);setEditingGoals(false);
+  }
+
+  const now=new Date();
+  const curKey=monthKey(now.toISOString());
+  const prevKey=useMemo(()=>{const d=new Date(now.getFullYear(),now.getMonth()-1,1);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;},[]);
+  const curEntries=useMemo(()=>entries.filter(e=>monthKey(e.date)===curKey),[entries]);
+  const curTotal=useMemo(()=>curEntries.reduce((s,e)=>s+Number(e.amount),0),[curEntries]);
+  const prevTotal=useMemo(()=>entries.filter(e=>monthKey(e.date)===prevKey).reduce((s,e)=>s+Number(e.amount),0),[entries]);
+  const allTotal=useMemo(()=>entries.reduce((s,e)=>s+Number(e.amount),0),[entries]);
+  const change=prevTotal>0?Math.round(((curTotal-prevTotal)/prevTotal)*100):null;
+  const teamGoal=useMemo(()=>goals.teamOverride||SALESPEOPLE.reduce((s,sp)=>s+getGoal(sp),0),[goals]);
+  const teamPct=Math.min(Math.round((curTotal/teamGoal)*100),100);
+  const allMonths=useMemo(()=>[...new Set(entries.map(e=>monthKey(e.date)))].sort((a,b)=>b.localeCompare(a)),[entries]);
+  const monthStats=useMemo(()=>allMonths.map(key=>{
+    const [y,m]=key.split("-").map(Number);
+    const me=entries.filter(e=>monthKey(e.date)===key);
+    const total=me.reduce((s,e)=>s+Number(e.amount),0);
+    const tGoal=goals.teamOverride||SALESPEOPLE.reduce((s,sp)=>s+getGoal(sp),0);
+    const diff=total-tGoal,pct=tGoal>0?Math.round((total/tGoal)*100):100;
+    const sellers={};
+    SALESPEOPLE.forEach(sp=>{sellers[sp]={total:0,count:0};});
+    me.forEach(e=>{if(sellers[e.seller]){sellers[e.seller].total+=Number(e.amount);sellers[e.seller].count++;}});
+    const sorted=Object.entries(sellers).sort((a,b)=>b[1].total-a[1].total);
+    return{key,year:y,month:m-1,label:`${MONTH_NAMES[m-1]} ${y}`,labelShort:`${MONTH_SHORT[m-1]} ${y}`,total,teamGoal:tGoal,diff,pct,count:me.length,sellers,sorted};
+  }),[allMonths,entries,goals]);
+  const selectedMonthStats=useMemo(()=>statsMonth?monthStats.find(m=>m.key===statsMonth)||null:null,[statsMonth,monthStats]);
+  const topEntries=useMemo(()=>toplistMonth==="current"?curEntries:toplistMonth==="all"?entries:entries.filter(e=>monthKey(e.date)===toplistMonth),[entries,toplistMonth,curEntries]);
+  const bySeller=useMemo(()=>{const map={};topEntries.forEach(e=>{if(!map[e.seller])map[e.seller]={total:0,count:0};map[e.seller].total+=Number(e.amount);map[e.seller].count++;});return Object.entries(map).sort((a,b)=>b[1].total-a[1].total);},[topEntries]);
+  const topTotal=bySeller.reduce((s,[,d])=>s+d.total,0),topCount=bySeller.reduce((s,[,d])=>s+d.count,0);
+  const monthlyTrend=useMemo(()=>{const res=[];for(let i=5;i>=0;i--){const d=new Date(now.getFullYear(),now.getMonth()-i,1);const m=d.getMonth(),y=d.getFullYear();const me=entries.filter(e=>{const ed=new Date(e.date);return ed.getMonth()===m&&ed.getFullYear()===y;});res.push({label:MONTH_SHORT[m],total:me.reduce((s,e)=>s+Number(e.amount),0),cnt:me.length,isCurrent:i===0});}return res;},[entries]);
+  const maxT=Math.max(...monthlyTrend.map(t=>t.total),1);
+  const sellerProgress=useMemo(()=>{const map={};SALESPEOPLE.forEach(sp=>{map[sp]={total:0,count:0};});curEntries.forEach(e=>{if(map[e.seller]){map[e.seller].total+=Number(e.amount);map[e.seller].count++;}});return Object.entries(map).sort((a,b)=>b[1].total-a[1].total);},[curEntries]);
+  const filteredLog=useMemo(()=>entries.filter(e=>{const mS=logSeller==="Alla"||e.seller===logSeller;const mQ=!logSearch||e.customer?.toLowerCase().includes(logSearch.toLowerCase())||e.seller.toLowerCase().includes(logSearch.toLowerCase());const mM=logMonth==="Alla"||monthKey(e.date)===logMonth;return mS&&mQ&&mM;}),[entries,logSearch,logSeller,logMonth]);
+
+  function addEntry(){if(!form.amount||isNaN(Number(form.amount))||Number(form.amount)<=0)return;setEntries(prev=>[{...form,amount:Number(form.amount),id:Date.now()},...prev]);setForm(f=>({...f,amount:"",customer:""}));}
+  function deleteEntry(id){setEntries(prev=>prev.filter(e=>e.id!==id));}
+  async function handleFile(file){const text=await file.text();const{entries:newE,errors}=parseCSV(text);if(newE.length>0)setEntries(prev=>[...newE,...prev]);setImportResult({added:newE.length,errors});}
+
+  const Tab=({id,label})=><button onClick={()=>setView(id)} style={{padding:"8px 18px",borderRadius:"7px",border:"none",background:view===id?C.accent:"transparent",color:view===id?"#fff":C.sub,fontSize:"12px",fontWeight:"600",cursor:"pointer",fontFamily:"inherit"}}>{label}</button>;
+
+  const KpiCard=({label,value,sub,color,bg})=>(
+    <div style={{background:bg,borderRadius:"12px",padding:"16px 18px",boxShadow:C.shadow,border:`1px solid ${C.border}`}}>
+      <div style={{fontSize:"11px",fontWeight:"600",color:C.sub,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"6px"}}>{label}</div>
+      <div style={{fontSize:"22px",fontWeight:"700",color,lineHeight:"1.1"}}>{value}</div>
+      <div style={{fontSize:"11px",color:C.sub,marginTop:"4px"}}>{sub}</div>
+    </div>
+  );
+
+  const Toplist=({entries:te})=>{
+    const bs=useMemo(()=>{const map={};te.forEach(e=>{if(!map[e.seller])map[e.seller]={total:0,count:0};map[e.seller].total+=Number(e.amount);map[e.seller].count++;});return Object.entries(map).sort((a,b)=>b[1].total-a[1].total);},[te]);
+    const tt=bs.reduce((s,[,d])=>s+d.total,0),tc=bs.reduce((s,[,d])=>s+d.count,0);
+    if(!bs.length)return <div style={{textAlign:"center",color:C.sub,padding:"24px",fontSize:"13px"}}>Inga affärer</div>;
+    return<>{bs.map(([seller,data],i)=>(
+      <div key={seller} style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"10px"}}>
+        <div style={{width:"20px",fontSize:"12px",textAlign:"center",color:i<3?C.accent:C.sub,fontWeight:"700"}}>{i===0?"🥇":i===1?"🥈":i===2?"🥉":i+1}</div>
+        <div style={{width:"70px",fontSize:"13px",fontWeight:"600"}}>{seller}</div>
+        <div style={{flex:1,height:"6px",borderRadius:"3px",background:C.border,overflow:"hidden"}}><div style={{width:`${Math.round((data.total/(bs[0][1].total||1))*100)}%`,height:"100%",background:i===0?C.accent:"#cbd5e1",borderRadius:"3px"}}/></div>
+        <div style={{fontSize:"12px",fontWeight:"700",color:C.text,width:"90px",textAlign:"right"}}>{fmt(data.total)}</div>
+        <div style={{fontSize:"11px",color:C.sub,width:"28px",textAlign:"right"}}>{data.count}st</div>
+      </div>
+    ))}
+    <div style={{marginTop:"12px",paddingTop:"12px",borderTop:`1px solid ${C.border}`,display:"flex",gap:"20px"}}>
+      {[["Totalt",fmt(tt),C.accent],["Affärer",`${tc} st`,C.text],["Snitt/affär",tc>0?fmt(Math.round(tt/tc)):"—",C.blue]].map(([l,v,c])=>(
+        <div key={l}><div style={{fontSize:"10px",color:C.sub,textTransform:"uppercase"}}>{l}</div><div style={{fontSize:"15px",fontWeight:"700",color:c}}>{v}</div></div>
+      ))}
+    </div></>;
+  };
+
+  return(
+    <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'Inter',system-ui,sans-serif",color:C.text}}>
+
+      {/* GOAL MODAL */}
+      {editingGoals&&goalDraft&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}}>
+          <div style={{background:"#fff",borderRadius:"14px",padding:"28px",width:"100%",maxWidth:"520px",boxShadow:"0 20px 60px rgba(0,0,0,0.2)",maxHeight:"90vh",overflowY:"auto"}}>
+            <div style={{fontSize:"17px",fontWeight:"700",marginBottom:"6px"}}>Redigera mål</div>
+            <div style={{fontSize:"12px",color:C.sub,marginBottom:"20px"}}>Standardmålet gäller alla säljare utan individuellt mål. Teammålet är summan av alla aktiva säljares mål.</div>
+            <div style={{marginBottom:"16px",padding:"14px 16px",background:C.blueLight,borderRadius:"10px",border:"1px solid #bfdbfe"}}>
+              <label style={{fontSize:"11px",fontWeight:"600",color:C.sub,textTransform:"uppercase",letterSpacing:"0.5px",display:"block",marginBottom:"4px"}}>Teammål (kr/månad — totalt)</label>
+              <div style={{fontSize:"12px",color:"#2563eb",marginBottom:"8px"}}>Nuvarande summerat: {fmt(SALESPEOPLE.reduce((s,sp)=>{const v=goalDraft.sellers[sp];return s+(v!==undefined&&v!==""?Number(v)||0:Number(goalDraft.default)||0);},0))}</div>
+              <input type="number" placeholder="Ange önskat teammål..." value={goalDraft.teamOverride||""} onChange={e=>setGoalDraft(d=>({...d,teamOverride:e.target.value===""?undefined:e.target.value}))} style={{...s.input,fontSize:"15px",fontWeight:"700",color:C.blue}}/>
+              <div style={{fontSize:"11px",color:C.sub,marginTop:"6px"}}>Lämna tomt för att räkna ut automatiskt.</div>
+            </div>
+            <div style={{marginBottom:"20px",padding:"14px 16px",background:C.accentLight,borderRadius:"10px",border:"1px solid #fed7aa"}}>
+              <label style={{fontSize:"11px",fontWeight:"600",color:C.sub,textTransform:"uppercase",letterSpacing:"0.5px",display:"block",marginBottom:"6px"}}>Standardmål (kr/säljare/månad)</label>
+              <input type="number" value={goalDraft.default} onChange={e=>setGoalDraft(d=>({...d,default:e.target.value}))} style={{...s.input,fontSize:"16px",fontWeight:"700",color:C.accent}}/>
+            </div>
+            <div style={{fontSize:"11px",fontWeight:"600",color:C.sub,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"10px"}}>Individuella mål</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"24px"}}>
+              {SALESPEOPLE.map(sp=>{
+                const val=goalDraft.sellers[sp];
+                return(
+                  <div key={sp}>
+                    <label style={{fontSize:"12px",fontWeight:"600",color:C.text,display:"block",marginBottom:"4px"}}>{sp}</label>
+                    <input type="number" placeholder={`Standard (${new Intl.NumberFormat("sv-SE").format(goalDraft.default||0)} kr)`} value={val!==undefined?val:""} onChange={e=>{const v=e.target.value;setGoalDraft(d=>({...d,sellers:{...d.sellers,[sp]:v===""?undefined:v}}));}} style={{...s.input,fontSize:"13px"}}/>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{display:"flex",gap:"10px",justifyContent:"flex-end"}}>
+              <button onClick={()=>setEditingGoals(false)} style={s.btn(C.surface,C.sub,C.border)}>Avbryt</button>
+              <button onClick={saveGoalDraft} style={s.btn(C.accent,"#fff")}>💾 Spara mål</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* HEADER */}
+      <div style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"18px 32px",display:"flex",alignItems:"center",justifyContent:"space-between",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",flexWrap:"wrap",gap:"12px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+          <div style={{width:"34px",height:"34px",background:C.accent,borderRadius:"8px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"18px"}}>☀</div>
+          <div>
+            <div style={{fontSize:"11px",color:C.sub,letterSpacing:"1px",textTransform:"uppercase",fontWeight:"500"}}>Solkraft Sverige</div>
+            <div style={{fontSize:"18px",fontWeight:"700",lineHeight:"1.2"}}>Säljöversikt</div>
+          </div>
+        </div>
+        <div style={{background:"#f1f5f9",borderRadius:"8px",padding:"4px",display:"flex",gap:"2px",flexWrap:"wrap"}}>
+          <Tab id="overview" label="Översikt"/>
+          <Tab id="stats" label="📊 Statistik"/>
+          <Tab id="log" label={`Affärer (${entries.length})`}/>
+          <Tab id="import" label="📂 Importera"/>
+          <Tab id="export" label="⬇ Exportera"/>
+        </div>
+        <div style={{textAlign:"right"}}>
+          <div style={{fontSize:"11px",color:C.sub,fontWeight:"500",marginBottom:"2px"}}>{MONTH_NAMES[now.getMonth()]} {now.getFullYear()}</div>
+          <div style={{fontSize:"26px",fontWeight:"700",color:C.accent,lineHeight:"1"}}>{fmt(curTotal)}</div>
+          <div style={{fontSize:"12px",color:C.sub,marginTop:"2px"}}>{curEntries.length} affärer denna månad</div>
+        </div>
+      </div>
+
+      <div style={{padding:"24px 32px",maxWidth:"1200px",margin:"0 auto"}}>
+
+        {/* OVERVIEW */}
+        {view==="overview"&&<>
+          <div style={s.card}>
+            <div style={s.label}>Registrera affär</div>
+            <div style={{display:"flex",gap:"12px",flexWrap:"wrap",alignItems:"flex-end"}}>
+              {[{label:"Säljare",key:"seller",type:"select"},{label:"Kund",key:"customer",type:"text",placeholder:"Kundens namn"},{label:"Belopp (SEK)",key:"amount",type:"number",placeholder:"ex. 85 000"},{label:"Datum",key:"date",type:"date"}].map(f=>(
+                <div key={f.key} style={{display:"flex",flexDirection:"column",gap:"5px",flex:f.key==="customer"?"2":"1",minWidth:"120px"}}>
+                  <label style={{fontSize:"11px",fontWeight:"600",color:C.sub,textTransform:"uppercase",letterSpacing:"0.5px"}}>{f.label}</label>
+                  {f.type==="select"?<select value={form.seller} onChange={e=>setForm(f2=>({...f2,seller:e.target.value}))} style={s.select}>{SALESPEOPLE.map(sp=><option key={sp}>{sp}</option>)}</select>
+                  :<input type={f.type} placeholder={f.placeholder} value={form[f.key]} onChange={e=>setForm(f2=>({...f2,[f.key]:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&addEntry()} style={s.input}/>}
+                </div>
+              ))}
+              <button onClick={addEntry} style={s.btn(C.accent,"#fff")}>+ Lägg till</button>
+            </div>
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"14px",marginBottom:"20px"}}>
+            <KpiCard label="Denna månad" value={fmt(curTotal)} sub={`${curEntries.length} affärer`} color={C.accent} bg={C.accentLight}/>
+            <KpiCard label="Förra månaden" value={fmt(prevTotal)} sub="Jämförelseperiod" color={C.sub} bg={C.surface}/>
+            <KpiCard label="Förändring" value={change===null?"—":`${change>0?"+":""}${change}%`} sub="vs förra månaden" color={change===null?C.sub:change>=0?C.green:"#dc2626"} bg={change===null?C.surface:change>=0?C.greenLight:"#fef2f2"}/>
+            <KpiCard label="Totalt (all tid)" value={fmt(allTotal)} sub={`${entries.length} affärer totalt`} color={C.blue} bg={C.blueLight}/>
+          </div>
+
+          <div style={s.card}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px",flexWrap:"wrap",gap:"8px"}}>
+              <div style={{display:"flex",alignItems:"baseline",gap:"10px",flexWrap:"wrap"}}>
+                <div style={s.label}>Teammål — {MONTH_NAMES[now.getMonth()]}</div>
+                <button onClick={openGoalEditor} style={{...s.btn(C.surface,C.sub,C.border),fontSize:"11px",padding:"4px 10px",marginBottom:"14px"}}>✏️ Redigera mål</button>
+              </div>
+              <div style={{fontSize:"13px",fontWeight:"700",color:teamPct>=100?C.green:C.text}}>{teamPct}% <span style={{fontSize:"11px",fontWeight:"400",color:C.sub}}>({fmt(curTotal)} / {fmt(teamGoal)})</span></div>
+            </div>
+            <div style={{height:"10px",borderRadius:"6px",background:C.border,overflow:"hidden",marginBottom:"14px"}}>
+              <div style={{height:"100%",width:`${teamPct}%`,background:teamPct>=100?C.green:C.accent,borderRadius:"6px",transition:"width 0.4s"}}/>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(165px,1fr))",gap:"10px"}}>
+              {sellerProgress.map(([seller,data])=><SellerGoalCard key={seller} seller={seller} data={data} getGoal={getGoal}/>)}
+            </div>
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"20px",marginBottom:"20px"}}>
+            <div style={s.card}>
+              <div style={s.label}>Månadsöversikt</div>
+              <div style={{display:"flex",gap:"8px",alignItems:"flex-end",height:"100px"}}>
+                {monthlyTrend.map((m,i)=>{const h=maxT>0?Math.max((m.total/maxT)*84,m.total>0?6:2):2;return(
+                  <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:"4px",justifyContent:"flex-end"}}>
+                    <div style={{fontSize:"9px",color:m.isCurrent?C.accent:C.sub,fontWeight:m.isCurrent?"700":"400",textAlign:"center"}}>{m.total>0?fmt(m.total).replace("kr","").trim():""}</div>
+                    <div style={{width:"100%",height:`${h}px`,background:m.isCurrent?C.accent:C.border,borderRadius:"4px 4px 2px 2px"}}/>
+                    <div style={{fontSize:"10px",color:m.isCurrent?C.text:C.sub,fontWeight:m.isCurrent?"600":"400"}}>{m.label}</div>
+                    <div style={{fontSize:"9px",color:C.sub}}>{m.cnt} st</div>
+                  </div>
+                );})}
+              </div>
+            </div>
+            <div style={s.card}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"16px",flexWrap:"wrap",gap:"8px"}}>
+                <div style={s.label}>Topplista</div>
+                <select value={toplistMonth} onChange={e=>setToplistMonth(e.target.value)} style={{padding:"5px 10px",borderRadius:"6px",border:`1.5px solid ${C.border}`,fontSize:"12px",color:C.sub,background:"#fff",outline:"none",cursor:"pointer",fontFamily:"inherit"}}>
+                  <option value="current">Denna månad</option>
+                  <option value="all">All tid</option>
+                  {allMonths.filter(k=>k!==curKey).map(k=>{const[y,m]=k.split("-");return<option key={k} value={k}>{MONTH_SHORT[Number(m)-1]} {y}</option>;})}
+                </select>
+              </div>
+              <Toplist entries={topEntries}/>
+            </div>
+          </div>
+        </>}
+
+        {/* STATS */}
+        {view==="stats"&&(
+          <div>
+            {allMonths.length===0?<div style={{...s.card,textAlign:"center",color:C.sub,padding:"60px",fontSize:"13px"}}>Ingen data ännu.</div>:<>
+              <div style={s.card}>
+                <div style={{display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"center"}}>
+                  <button onClick={()=>setStatsMonth(null)} style={s.btn(statsMonth===null?C.accent:C.surface,statsMonth===null?"#fff":C.sub,C.border)}>Alla månader</button>
+                  {allMonths.map(k=>{const[y,m]=k.split("-");return<button key={k} onClick={()=>setStatsMonth(k)} style={s.btn(statsMonth===k?C.accent:C.surface,statsMonth===k?"#fff":C.sub,C.border)}>{MONTH_SHORT[Number(m)-1]} {y}</button>;})}
+                </div>
+              </div>
+
+              {selectedMonthStats&&(()=>{const ms=selectedMonthStats;return<>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"14px",marginBottom:"20px"}}>
+                  <KpiCard label="Totalt" value={fmt(ms.total)} sub={`${ms.count} affärer`} color={C.accent} bg={C.accentLight}/>
+                  <KpiCard label="Teammål" value={fmt(ms.teamGoal)} sub="Periodens mål" color={C.sub} bg={C.surface}/>
+                  <KpiCard label="Differens" value={(ms.diff>=0?"+":"")+fmt(ms.diff)} sub={ms.diff>=0?"Över mål 🎉":"Under mål"} color={ms.diff>=0?C.green:"#dc2626"} bg={ms.diff>=0?C.greenLight:"#fef2f2"}/>
+                  <KpiCard label="Uppnått" value={`${ms.pct}%`} sub="av teammålet" color={ms.pct>=100?C.green:C.accent} bg={ms.pct>=100?C.greenLight:C.accentLight}/>
+                </div>
+                <div style={s.card}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:"10px"}}>
+                    <div style={s.label}>Teammål — {ms.label}</div>
+                    <div style={{fontSize:"13px",fontWeight:"700",color:ms.pct>=100?C.green:C.text}}>{ms.pct}%</div>
+                  </div>
+                  <div style={{height:"10px",borderRadius:"6px",background:C.border,overflow:"hidden",marginBottom:"14px"}}>
+                    <div style={{height:"100%",width:`${Math.min(ms.pct,100)}%`,background:ms.pct>=100?C.green:C.accent,borderRadius:"6px"}}/>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(165px,1fr))",gap:"10px"}}>
+                    {ms.sorted.map(([seller,data])=><SellerGoalCard key={seller} seller={seller} data={data} getGoal={getGoal}/>)}
+                  </div>
+                </div>
+                <div style={s.card}>
+                  <div style={s.label}>Topplista — {ms.label}</div>
+                  <Toplist entries={entries.filter(e=>monthKey(e.date)===ms.key)}/>
+                </div>
+              </>;})()} 
+
+              {!selectedMonthStats&&<>
+                <div style={s.card}>
+                  <div style={s.label}>Sälj vs Teammål — alla månader</div>
+                  <div style={{display:"flex",gap:"6px",alignItems:"flex-end",overflowX:"auto",paddingBottom:"8px"}}>
+                    {(()=>{const maxV=Math.max(...monthStats.map(m=>Math.max(m.total,m.teamGoal)),1);return monthStats.slice().reverse().map(ms=>{
+                      const h=Math.max((ms.total/maxV)*100,ms.total>0?4:2),hg=Math.max((ms.teamGoal/maxV)*100,4);
+                      return<div key={ms.key} onClick={()=>setStatsMonth(ms.key)} style={{minWidth:"52px",flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:"4px",justifyContent:"flex-end",cursor:"pointer"}}>
+                        <div style={{fontSize:"9px",color:ms.total>=ms.teamGoal?C.green:C.accent,fontWeight:"700",textAlign:"center"}}>{ms.total>0?fmt(ms.total).replace("kr","").trim():""}</div>
+                        <div style={{width:"100%",display:"flex",gap:"2px",alignItems:"flex-end",height:"100px"}}>
+                          <div style={{flex:1,height:`${h}px`,background:ms.key===curKey?C.accent:"#f97316aa",borderRadius:"3px 3px 1px 1px"}}/>
+                          <div style={{flex:1,height:`${hg}px`,background:"#e2e8ef",borderRadius:"3px 3px 1px 1px"}}/>
+                        </div>
+                        <div style={{fontSize:"10px",color:ms.key===curKey?C.text:C.sub,fontWeight:ms.key===curKey?"700":"400",textAlign:"center"}}>{ms.labelShort}</div>
+                        <div style={{fontSize:"9px",color:ms.diff>=0?C.green:"#dc2626",fontWeight:"600"}}>{ms.diff>=0?"+":""}{fmt(ms.diff).replace("kr","").trim()}</div>
+                      </div>;
+                    });})()}
+                  </div>
+                  <div style={{display:"flex",gap:"16px",marginTop:"8px",paddingTop:"8px",borderTop:`1px solid ${C.border}`}}>
+                    <div style={{display:"flex",alignItems:"center",gap:"6px"}}><div style={{width:"12px",height:"12px",background:C.accent,borderRadius:"2px"}}/><div style={{fontSize:"11px",color:C.sub}}>Sälj</div></div>
+                    <div style={{display:"flex",alignItems:"center",gap:"6px"}}><div style={{width:"12px",height:"12px",background:"#e2e8ef",borderRadius:"2px"}}/><div style={{fontSize:"11px",color:C.sub}}>Mål</div></div>
+                    <div style={{fontSize:"11px",color:C.sub}}>Klicka för detaljer</div>
+                  </div>
+                </div>
+
+                <div style={s.card}>
+                  <div style={s.label}>Månadsöversikt</div>
+                  <table style={{width:"100%",borderCollapse:"collapse"}}>
+                    <thead><tr>{["Månad","Sälj","Mål","Differens","Uppnått","Affärer","Snitt/affär"].map((h,i)=><th key={i} style={{fontSize:"11px",fontWeight:"600",color:C.sub,textTransform:"uppercase",letterSpacing:"0.5px",textAlign:i>0?"right":"left",padding:"8px 10px",borderBottom:`1.5px solid ${C.border}`}}>{h}</th>)}</tr></thead>
+                    <tbody>{monthStats.map((ms,i)=><tr key={ms.key} onClick={()=>setStatsMonth(ms.key)} style={{background:i%2===0?"transparent":"#fafbfc",cursor:"pointer"}}>
+                      <td style={{padding:"10px",fontSize:"13px",fontWeight:"600",borderBottom:`1px solid ${C.border}`}}>{ms.label}</td>
+                      <td style={{padding:"10px",fontSize:"13px",fontWeight:"700",color:C.accent,textAlign:"right",borderBottom:`1px solid ${C.border}`}}>{fmt(ms.total)}</td>
+                      <td style={{padding:"10px",fontSize:"13px",color:C.sub,textAlign:"right",borderBottom:`1px solid ${C.border}`}}>{fmt(ms.teamGoal)}</td>
+                      <td style={{padding:"10px",fontSize:"13px",fontWeight:"600",color:ms.diff>=0?C.green:"#dc2626",textAlign:"right",borderBottom:`1px solid ${C.border}`}}>{ms.diff>=0?"+":""}{fmt(ms.diff)}</td>
+                      <td style={{padding:"10px",fontSize:"13px",fontWeight:"700",color:ms.pct>=100?C.green:ms.pct>60?C.accent:C.sub,textAlign:"right",borderBottom:`1px solid ${C.border}`}}>{ms.pct}%</td>
+                      <td style={{padding:"10px",fontSize:"13px",textAlign:"right",borderBottom:`1px solid ${C.border}`}}>{ms.count}</td>
+                      <td style={{padding:"10px",fontSize:"13px",color:C.blue,textAlign:"right",borderBottom:`1px solid ${C.border}`}}>{ms.count>0?fmt(Math.round(ms.total/ms.count)):"—"}</td>
+                    </tr>)}</tbody>
+                  </table>
+                </div>
+
+                <div style={s.card}>
+                  <div style={s.label}>Säljare — månadsstatistik</div>
+                  <div style={{overflowX:"auto"}}>
+                    <table style={{width:"100%",borderCollapse:"collapse",minWidth:"600px"}}>
+                      <thead><tr>
+                        <th style={{fontSize:"11px",fontWeight:"600",color:C.sub,textTransform:"uppercase",letterSpacing:"0.5px",textAlign:"left",padding:"8px 10px",borderBottom:`1.5px solid ${C.border}`,background:"#fff",position:"sticky",left:0}}>Säljare</th>
+                        {monthStats.slice().reverse().map(ms=><th key={ms.key} style={{fontSize:"11px",fontWeight:"600",color:ms.key===curKey?C.accent:C.sub,textTransform:"uppercase",letterSpacing:"0.5px",textAlign:"right",padding:"8px 10px",borderBottom:`1.5px solid ${C.border}`,whiteSpace:"nowrap"}}>{ms.labelShort}</th>)}
+                        <th style={{fontSize:"11px",fontWeight:"600",color:C.sub,textTransform:"uppercase",letterSpacing:"0.5px",textAlign:"right",padding:"8px 10px",borderBottom:`1.5px solid ${C.border}`}}>Totalt</th>
+                      </tr></thead>
+                      <tbody>
+                        {SALESPEOPLE.map(seller=>({seller,allT:entries.filter(e=>e.seller===seller).reduce((s,e)=>s+Number(e.amount),0)})).sort((a,b)=>b.allT-a.allT).map(({seller,allT},si)=>(
+                          <tr key={seller} style={{background:si%2===0?"transparent":"#fafbfc"}}>
+                            <td style={{padding:"10px",fontSize:"13px",fontWeight:"600",borderBottom:`1px solid ${C.border}`,position:"sticky",left:0,background:si%2===0?"#fff":"#fafbfc"}}>{seller}</td>
+                            {monthStats.slice().reverse().map(ms=>{const d=ms.sellers[seller];const goal=getGoal(seller);const pct=d&&d.total>0&&goal>0?Math.round((d.total/goal)*100):null;return(
+                              <td key={ms.key} style={{padding:"10px",fontSize:"12px",textAlign:"right",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>
+                                {d&&d.total>0?<div><div style={{fontWeight:"700",color:C.text}}>{fmt(d.total)}</div>{pct!==null&&<div style={{fontSize:"10px",color:pct>=100?C.green:pct>60?C.accent:C.sub}}>{pct}%</div>}<div style={{fontSize:"10px",color:C.sub}}>{d.count} st</div></div>:<span style={{color:C.border}}>—</span>}
+                              </td>
+                            );})}
+                            <td style={{padding:"10px",fontSize:"13px",fontWeight:"700",color:C.accent,textAlign:"right",borderBottom:`1px solid ${C.border}`}}>{allT>0?fmt(allT):"—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>}
+            </>}
+          </div>
+        )}
+
+        {/* LOG */}
+        {view==="log"&&(
+          <div style={s.card}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"16px",flexWrap:"wrap",gap:"10px"}}>
+              <div style={s.label}>Alla affärer — {entries.length} st</div>
+              <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
+                <input type="text" placeholder="Sök säljare eller kund..." value={logSearch} onChange={e=>setLogSearch(e.target.value)} style={{...s.input,width:"200px"}}/>
+                <select value={logSeller} onChange={e=>setLogSeller(e.target.value)} style={{...s.select,width:"140px"}}>
+                  <option value="Alla">Alla säljare</option>
+                  {SALESPEOPLE.map(sp=><option key={sp}>{sp}</option>)}
+                </select>
+                <select value={logMonth} onChange={e=>setLogMonth(e.target.value)} style={{...s.select,width:"150px"}}>
+                  <option value="Alla">Alla månader</option>
+                  {allMonths.map(k=>{const[y,m]=k.split("-");return<option key={k} value={k}>{MONTH_NAMES[Number(m)-1]} {y}</option>;})}
+                </select>
+              </div>
+            </div>
+            {filteredLog.length===0?<div style={{textAlign:"center",color:C.sub,padding:"40px",fontSize:"13px"}}>Inga affärer matchar sökningen</div>:<>
+              <table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead><tr>{["Datum","Säljare","Kund","Belopp",""].map((h,i)=><th key={i} style={{fontSize:"11px",fontWeight:"600",color:C.sub,textTransform:"uppercase",letterSpacing:"0.5px",textAlign:i===3?"right":"left",padding:"8px 10px",borderBottom:`1.5px solid ${C.border}`}}>{h}</th>)}</tr></thead>
+                <tbody>{filteredLog.map((e,i)=><tr key={e.id} style={{background:i%2===0?"transparent":"#fafbfc"}}>
+                  <td style={{padding:"10px",fontSize:"13px",color:C.sub,borderBottom:`1px solid ${C.border}`}}>{fmtDate(e.date)}</td>
+                  <td style={{padding:"10px",fontSize:"13px",fontWeight:"600",borderBottom:`1px solid ${C.border}`}}>{e.seller}</td>
+                  <td style={{padding:"10px",fontSize:"13px",borderBottom:`1px solid ${C.border}`}}>{e.customer||"—"}</td>
+                  <td style={{padding:"10px",fontSize:"13px",fontWeight:"700",color:C.accent,textAlign:"right",borderBottom:`1px solid ${C.border}`}}>{fmt(Number(e.amount))}</td>
+                  <td style={{padding:"10px",textAlign:"right",borderBottom:`1px solid ${C.border}`}}><button onClick={()=>deleteEntry(e.id)} style={{background:"transparent",border:`1px solid ${C.border}`,color:"#dc2626",borderRadius:"5px",padding:"3px 10px",fontSize:"11px",cursor:"pointer",fontWeight:"600"}}>Radera</button></td>
+                </tr>)}</tbody>
+              </table>
+              <div style={{marginTop:"12px",paddingTop:"12px",borderTop:`1px solid ${C.border}`,display:"flex",gap:"20px"}}>
+                <div><div style={{fontSize:"10px",color:C.sub,textTransform:"uppercase"}}>Visar</div><div style={{fontSize:"15px",fontWeight:"700",color:C.text}}>{filteredLog.length} affärer</div></div>
+                <div><div style={{fontSize:"10px",color:C.sub,textTransform:"uppercase"}}>Totalt</div><div style={{fontSize:"15px",fontWeight:"700",color:C.accent}}>{fmt(filteredLog.reduce((s,e)=>s+Number(e.amount),0))}</div></div>
+              </div>
+            </>}
+          </div>
+        )}
+
+        {/* IMPORT */}
+        {view==="import"&&(
+          <div style={s.card}>
+            <div style={s.label}>Importera affärer via fil</div>
+            <div style={{fontSize:"12px",color:C.sub,marginBottom:"14px",lineHeight:"1.7"}}>
+              Ladda upp en <strong>.csv</strong>-fil med kolumnerna: <code style={{background:C.bg,padding:"1px 5px",borderRadius:"4px"}}>Säljare, Belopp, Datum, Kund</code>.<br/>
+              Datum: <code style={{background:C.bg,padding:"1px 5px",borderRadius:"4px"}}>ÅÅÅÅ-MM-DD</code>. Avgränsare: komma eller semikolon.
+            </div>
+            <div onDragOver={e=>{e.preventDefault();setDragOver(true);}} onDragLeave={()=>setDragOver(false)} onDrop={e=>{e.preventDefault();setDragOver(false);const f=e.dataTransfer.files?.[0];if(f)handleFile(f);}} onClick={()=>fileRef.current?.click()}
+              style={{border:`2px dashed ${dragOver?C.accent:C.border}`,borderRadius:"10px",padding:"40px",textAlign:"center",cursor:"pointer",background:dragOver?C.accentLight:C.bg,transition:"all 0.15s"}}>
+              <div style={{fontSize:"32px",marginBottom:"8px"}}>📂</div>
+              <div style={{fontSize:"14px",fontWeight:"600",color:dragOver?C.accent:C.text}}>Dra och släpp fil här</div>
+              <div style={{fontSize:"12px",color:C.sub,marginTop:"4px"}}>eller klicka för att välja</div>
+            </div>
+            <input ref={fileRef} type="file" accept=".csv,.txt" style={{display:"none"}} onChange={e=>{const f=e.target.files?.[0];if(f)handleFile(f);e.target.value="";}}/>
+            {importResult&&(
+              <div style={{marginTop:"14px",padding:"14px 18px",borderRadius:"8px",background:importResult.added>0?C.greenLight:"#fef2f2",border:`1px solid ${importResult.added>0?"#86efac":"#fca5a5"}`}}>
+                {importResult.added>0&&<div style={{fontSize:"13px",fontWeight:"600",color:C.green}}>✓ {importResult.added} affärer importerades</div>}
+                {importResult.errors.map((e,i)=><div key={i} style={{fontSize:"12px",color:"#dc2626",marginTop:"4px"}}>⚠ {e}</div>)}
+                <button onClick={()=>setImportResult(null)} style={{marginTop:"8px",fontSize:"11px",color:C.sub,background:"transparent",border:"none",cursor:"pointer",padding:0}}>Stäng</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* EXPORT */}
+        {view==="export"&&(
+          <div>
+            <div style={s.card}>
+              <div style={s.label}>Exportera till Excel</div>
+              <div style={{fontSize:"13px",color:C.sub,marginBottom:"16px",lineHeight:"1.7"}}>Markera tabellen → <strong>Ctrl+A</strong> → <strong>Ctrl+C</strong> → öppna Excel → <strong>Ctrl+V</strong>.</div>
+              <div style={{padding:"12px 16px",borderRadius:"8px",background:"#fffbeb",border:"1px solid #fde68a",fontSize:"12px",color:"#92400e"}}>💡 Spara CSV-exporten i OneDrive/Google Drive som backup.</div>
+            </div>
+            {[
+              {title:"Nyckeltal",headers:["Period","Belopp","Affärer"],rows:[["Denna månad",fmt(curTotal),curEntries.length],["Förra månaden",fmt(prevTotal),entries.filter(e=>monthKey(e.date)===prevKey).length],["Totalt all tid",fmt(allTotal),entries.length]]},
+              {title:`Månadsmål — ${MONTH_NAMES[now.getMonth()]}`,headers:["Säljare","Sålt","Mål","Uppnått %","Kvar"],rows:sellerProgress.map(([seller,data])=>{const g=getGoal(seller);const p=g===0?100:Math.round((data.total/g)*100);return[seller,fmt(data.total),g===0?"—":fmt(g),g===0?"—":p+"%",g===0||p>=100?"✓ Klart":fmt(g-data.total)];})},
+              {title:`Topplista — ${MONTH_NAMES[now.getMonth()]}`,headers:["#","Säljare","Belopp","Affärer","Snitt/affär"],rows:bySeller.map(([seller,data],i)=>[(i+1),seller,fmt(data.total),data.count,fmt(Math.round(data.total/data.count))])},
+              {title:"Alla affärer",headers:["Datum","Säljare","Kund","Belopp"],rows:entries.map(e=>[fmtDate(e.date),e.seller,e.customer||"",Number(e.amount)])},
+            ].map(section=>(
+              <div key={section.title} style={s.card}>
+                <div style={s.label}>{section.title}</div>
+                <table style={{width:"100%",borderCollapse:"collapse",userSelect:"all"}}>
+                  <thead><tr style={{background:C.accent}}>{section.headers.map(h=><th key={h} style={{padding:"9px 12px",fontSize:"12px",fontWeight:"600",color:"#fff",textAlign:"left",border:"1px solid #e2e8ef"}}>{h}</th>)}</tr></thead>
+                  <tbody>{section.rows.map((row,i)=><tr key={i} style={{background:i%2===0?"#fff":"#f8fafc"}}>{row.map((cell,j)=><td key={j} style={{padding:"9px 12px",fontSize:"13px",border:`1px solid ${C.border}`}}>{cell}</td>)}</tr>)}</tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
